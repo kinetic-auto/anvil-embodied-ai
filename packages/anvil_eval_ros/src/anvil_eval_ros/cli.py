@@ -718,6 +718,7 @@ def main() -> None:
     compose_cmd = [
         "docker", "compose",
         "-f", str(compose_file),
+        "--profile", "stack",
     ]
     if args.monitor:
         compose_cmd += ["--profile", "monitor"]
@@ -727,7 +728,12 @@ def main() -> None:
         "--remove-orphans",
         "--abort-on-container-exit",
         "--exit-code-from", "eval-recorder",
+        "inference",
+        "mcap-player",
+        "eval-recorder",
     ]
+    if args.monitor:
+        compose_cmd.append("inference-monitor")
 
     if args.no_docker:
         log.info("[anvil-eval-ros] --no-docker set. Eval plan: %s", plan_path)
