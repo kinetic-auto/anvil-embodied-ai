@@ -1,7 +1,7 @@
 """Configuration schema for MCAP to LeRobot conversion"""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 
 @dataclass
@@ -94,10 +94,14 @@ class FeatureMapping:
     Allows different feature configurations for observation vs action.
     """
 
-    # Primary field for state/action (typically "position")
-    state: str = "position"
+    # Primary field(s) for state/action.
+    # String: that JointState field becomes observation.state / action.
+    # List: those fields are concatenated in list order into the primary vector
+    # (block layout: all joints of field 0, then field 1, ...).
+    state: Union[str, List[str]] = "position"
 
-    # Additional fields to extract (e.g., ["velocity", "effort"])
+    # Additional fields to extract as sibling keys (e.g., ["velocity", "effort"]).
+    # Must be empty when state is a list (those fields are already packed).
     others: List[str] = field(default_factory=list)
 
 

@@ -22,6 +22,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "anvil-shared",
     "lerobot~=0.5.1",
     "torch>=2.2.1,<2.11.0",
     "numpy>=2.0.0,<2.3.0",

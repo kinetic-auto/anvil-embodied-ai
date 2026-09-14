@@ -4,9 +4,10 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
+from anvil_shared.state_observs import packed_feature_names, packed_fields
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-from ..config.schema import DEFAULT_DATA_CONFIG, DataConfig
+from ..config.schema import DEFAULT_DATA_CONFIG, DataConfig, FeatureMapping
 
 
 def _patch_resume_video_continuation(dataset: LeRobotDataset) -> None:
@@ -339,70 +340,49 @@ class LeRobotWriter:
                 robot_joints = [f"{robot}_{name}" for name in joint_names[robot]]
                 all_joint_names.extend(robot_joints)
 
-            num_joints = len(all_joint_names)
-
-            # Combined observation state
-            features["observation.state"] = {
-                "dtype": "float32",
-                "shape": (num_joints,),
-                "names": all_joint_names,
-            }
-
-            # Combined action
-            features["action"] = {
-                "dtype": "float32",
-                "shape": (num_joints,),
-                "names": all_joint_names,
-            }
-
-            # Additional observation features (from observation_feature_mapping.others)
-            for ft_key in self.config.observation_feature_mapping.others:
-                features[f"observation.{ft_key}"] = {
-                    "dtype": "float32",
-                    "shape": (num_joints,),
-                    "names": all_joint_names,
-                }
-
-            # Additional action features (from action_feature_mapping.others)
-            for ft_key in self.config.action_feature_mapping.others:
-                features[f"action.{ft_key}"] = {
-                    "dtype": "float32",
-                    "shape": (num_joints,),
-                    "names": all_joint_names,
-                }
+            features.update(
+                self._vector_features(all_joint_names)
+            )
         else:
             # Single robot: use original naming (no prefix)
             names = joint_names.get("", [])
-            num_joints = len(names)
+            features.update(self._vector_features(names))
 
-            features["observation.state"] = {
+        return features
+
+    def _vector_feature(self, names: List[str], mapping: FeatureMapping) -> Dict[str, Any]:
+        fields = packed_fields(mapping.state)
+        if fields:
+            names = packed_feature_names(names, fields)
+        return {
+            "dtype": "float32",
+            "shape": (len(names),),
+            "names": names,
+        }
+
+    def _sibling_features(
+        self, names: List[str], mapping: FeatureMapping, prefix: str
+    ) -> Dict[str, Any]:
+        if packed_fields(mapping.state):
+            return {}
+        return {
+            f"{prefix}.{ft_key}": {
                 "dtype": "float32",
-                "shape": (num_joints,),
+                "shape": (len(names),),
                 "names": names,
             }
+            for ft_key in mapping.others
+        }
 
-            features["action"] = {
-                "dtype": "float32",
-                "shape": (num_joints,),
-                "names": names,
-            }
-
-            # Additional observation features
-            for ft_key in self.config.observation_feature_mapping.others:
-                features[f"observation.{ft_key}"] = {
-                    "dtype": "float32",
-                    "shape": (num_joints,),
-                    "names": names,
-                }
-
-            # Additional action features
-            for ft_key in self.config.action_feature_mapping.others:
-                features[f"action.{ft_key}"] = {
-                    "dtype": "float32",
-                    "shape": (num_joints,),
-                    "names": names,
-                }
-
+    def _vector_features(self, joint_names: List[str]) -> Dict[str, Any]:
+        obs_map = self.config.observation_feature_mapping
+        act_map = self.config.action_feature_mapping
+        features: Dict[str, Any] = {
+            "observation.state": self._vector_feature(joint_names, obs_map),
+            "action": self._vector_feature(joint_names, act_map),
+        }
+        features.update(self._sibling_features(joint_names, obs_map, "observation"))
+        features.update(self._sibling_features(joint_names, act_map, "action"))
         return features
 
     def load_dataset_for_writing(self) -> LeRobotDataset:

@@ -38,6 +38,7 @@ from mcap_converter import (
     LeRobotWriter,
     McapReader,
 )
+from mcap_converter.config.validators import ConfigurationError, validate_config
 from mcap_converter.cli.mcap_valid import default_report_paths
 from mcap_converter.core.extractor import BufferedStreamExtractor
 from mcap_converter.core.quality import SEVERITY_CRITICAL, SEVERITY_PASS, SEVERITY_WARNING
@@ -781,11 +782,6 @@ examples:
         help="only convert the first N episodes (default: convert all)",
     )
     parser.add_argument(
-        "--act-from-obs-n-step", type=int, default=None,
-        metavar="N",
-        help="override action_from_observation_n in config: action[t] = observation[t+N] (default: use config value, factory default 10)",
-    )
-    parser.add_argument(
         "--debug-plot-episodes", type=int, default=5,
         metavar="N",
         help="number of episodes to include in debug plots (default: 5)",
@@ -853,6 +849,11 @@ examples:
     else:
         config = ConfigLoader.get_default()
         log("Using default configuration")
+    try:
+        validate_config(config)
+    except ConfigurationError as exc:
+        log(f"[red]{escape(str(exc))}[/red]")
+        sys.exit(1)
 
     # ── Mandatory quality-report gate ──────────────────────────────────
     # mcap-convert refuses to run without a mcap-valid quality report (explicit
@@ -883,10 +884,6 @@ examples:
         exit(1)
 
     quality_skip_paths = resolve_quality_skip_paths(report_path, args.include_flagged)
-
-    if args.act_from_obs_n_step is not None:
-        config.action_from_observation_n = args.act_from_obs_n_step
-        log(f"action_from_observation_n overridden to [bold]{args.act_from_obs_n_step}[/bold] via --act-from-obs-n-step")
 
     # Collect MCAP files once (reused for fps detection and conversion)
     all_mcap_files = collect_mcap_files(args.input_dir)
@@ -954,10 +951,7 @@ examples:
     banner.add_row("Resume", "yes" if args.resume else "no")
     banner.add_row("Max episodes", str(args.max_episodes) if args.max_episodes else "all")
     if config.action_from_observation:
-        n_label = str(config.action_from_observation_n)
-        if args.act_from_obs_n_step is not None:
-            n_label += " [yellow](CLI override)[/yellow]"
-        banner.add_row("act-from-obs n", n_label)
+        banner.add_row("action_from_observation_n", str(config.action_from_observation_n))
     banner.add_row("Debug plots", f"first {args.debug_plot_episodes} episodes")
 
     console.print(Panel(

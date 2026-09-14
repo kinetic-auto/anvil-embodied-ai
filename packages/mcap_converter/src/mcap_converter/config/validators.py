@@ -100,16 +100,38 @@ def validate_feature_mapping(mapping: FeatureMapping, name: str) -> List[str]:
     errors = []
     valid_fields = {"position", "velocity", "effort"}
 
-    # State field must be valid
-    if not mapping.state:
-        errors.append(f"{name}.state cannot be empty")
-    elif mapping.state not in valid_fields:
-        errors.append(f"{name}.state '{mapping.state}' is not a valid JointState field")
-
-    # Others must be valid fields
-    for field in mapping.others:
-        if field not in valid_fields:
-            errors.append(f"{name}.others contains invalid field '{field}'")
+    if isinstance(mapping.state, list):
+        if not mapping.state:
+            errors.append(f"{name}.state cannot be empty")
+        else:
+            seen: set[str] = set()
+            for field in mapping.state:
+                if field not in valid_fields:
+                    errors.append(
+                        f"{name}.state contains invalid field '{field}'"
+                    )
+                elif field in seen:
+                    errors.append(
+                        f"{name}.state contains duplicate field '{field}'"
+                    )
+                seen.add(field)
+        if mapping.others:
+            errors.append(
+                f"{name}.others must be empty when {name}.state is a list "
+                "(fields are packed into the primary vector)"
+            )
+    elif isinstance(mapping.state, str):
+        if not mapping.state:
+            errors.append(f"{name}.state cannot be empty")
+        elif mapping.state not in valid_fields:
+            errors.append(
+                f"{name}.state '{mapping.state}' is not a valid JointState field"
+            )
+        for field in mapping.others:
+            if field not in valid_fields:
+                errors.append(f"{name}.others contains invalid field '{field}'")
+    else:
+        errors.append(f"{name}.state must be a string or a list of strings")
 
     return errors
 

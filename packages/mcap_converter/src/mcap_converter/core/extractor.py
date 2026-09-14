@@ -5,6 +5,8 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import numpy as np
 
+from anvil_shared.state_observs import packed_fields
+
 from ..config.schema import DEFAULT_DATA_CONFIG, DataConfig, JointNamePattern
 from ..exceptions import DataExtractionError
 from ..utils.image_utils import decode_compressed_image, decode_image
@@ -893,10 +895,12 @@ class BufferedStreamExtractor:
 
         # Align joint states
         if joint_buffers:
-            has_action_buffer = any(role == "action" for (role, _) in joint_buffers)
+            # action_topics pre-seed empty ("action", robot) buffers. Those keys
+            # must not suppress lookahead when action_from_observation is on —
+            # command topics are ignored in that mode.
             action_ts = (
                 main_ts + self.frame_interval * self.config.action_from_observation_n
-                if self.config.action_from_observation and not has_action_buffer
+                if self.config.action_from_observation
                 else None
             )
             joint_aligned = self._align_joint_states(joint_buffers, main_ts, action_ts=action_ts)
@@ -932,7 +936,7 @@ class BufferedStreamExtractor:
         """
         # Collect data by role, then concatenate robots in sorted order
         obs_data = {}  # {robot: {pos, vel, eff}}
-        action_data = {}  # {robot: {pos}}
+        action_data = {}  # {robot: {pos, vel?, eff?}}
 
         # Pass 1: observation — required, no fallback (unchanged behavior).
         # Action fallback (pass 2 below) needs obs_data fully populated first,
@@ -956,19 +960,20 @@ class BufferedStreamExtractor:
                 "eff": eff.copy() if eff.size > 0 else None,
             }
 
-        # Pass 2: action — forward-fill instead of dropping the whole frame
-        # when the arm is disengaged. See _resolve_action_position docstring
-        # for the fallback order.
-        for (role, robot), data in joint_buffers.items():
-            if role != "action":
-                continue
-            pos, fill_kind = self._resolve_action_position(
-                robot, data["buffer"], target_ts, obs_data
-            )
-            self._record_action_fill(robot, fill_kind)
-            if pos is None:
-                return None  # No action and no observation fallback available
-            action_data[robot] = {"pos": pos}
+        # Pass 2: action from command topics — skip when the config asked for
+        # observation lookahead. Pre-seeded empty action buffers would otherwise
+        # forward-fill action[t] = observation[t] and hide the AFO branch.
+        if not self.config.action_from_observation:
+            for (role, robot), data in joint_buffers.items():
+                if role != "action":
+                    continue
+                pos, fill_kind = self._resolve_action_position(
+                    robot, data["buffer"], target_ts, obs_data
+                )
+                self._record_action_fill(robot, fill_kind)
+                if pos is None:
+                    return None  # No action and no observation fallback available
+                action_data[robot] = {"pos": pos}
 
         # Fallback: use observation at action_ts (t+1) as action when action_topics
         # are configured but not recorded in this MCAP.
@@ -984,8 +989,12 @@ class BufferedStreamExtractor:
                 action_idx = self._find_nearest_in_buffer(buffer, action_ts)
                 if action_idx is None:
                     return None
-                _, pos, _, _ = buffer[action_idx]
-                action_data[robot] = {"pos": pos.copy()}
+                _, pos, vel, eff = buffer[action_idx]
+                action_data[robot] = {
+                    "pos": pos.copy(),
+                    "vel": vel.copy() if vel.size > 0 else None,
+                    "eff": eff.copy() if eff.size > 0 else None,
+                }
 
         # Check if multi-robot (has named robots like 'left', 'right')
         robots = sorted([r for r in set(obs_data.keys()) | set(action_data.keys()) if r])
@@ -1003,28 +1012,16 @@ class BufferedStreamExtractor:
             result = {}
 
             # Concatenate observation state
-            obs_positions = [obs_data[r]["pos"] for r in robots]
-            if obs_positions:
-                result["observation.state"] = np.concatenate(obs_positions)
-
-            # Concatenate observation velocity (only if enabled in config)
-            if "velocity" in self.config.observation_feature_mapping.others:
-                obs_velocities = [
-                    obs_data[r]["vel"] for r in robots if obs_data[r]["vel"] is not None
-                ]
-                if obs_velocities:
-                    result["observation.velocity"] = np.concatenate(obs_velocities)
-
-            # Concatenate observation effort (only if enabled in config)
-            if "effort" in self.config.observation_feature_mapping.others:
-                obs_efforts = [obs_data[r]["eff"] for r in robots if obs_data[r]["eff"] is not None]
-                if obs_efforts:
-                    result["observation.effort"] = np.concatenate(obs_efforts)
+            obs_entries = [obs_data[r] for r in robots]
+            result.update(self._emit_observation_features(obs_entries))
 
             # Concatenate action
-            action_positions = [action_data[r]["pos"] for r in robots]
-            if action_positions:
-                result["action"] = np.concatenate(action_positions)
+            action_entries = [action_data[r] for r in robots]
+            packed_action = self._pack_or_positions(
+                self.config.action_feature_mapping.state, action_entries
+            )
+            if packed_action is not None:
+                result["action"] = packed_action
 
             return result
         else:
@@ -1032,18 +1029,66 @@ class BufferedStreamExtractor:
             result = {}
 
             if "" in obs_data:
-                result["observation.state"] = obs_data[""]["pos"]
-                if "velocity" in self.config.observation_feature_mapping.others:
-                    if obs_data[""]["vel"] is not None:
-                        result["observation.velocity"] = obs_data[""]["vel"]
-                if "effort" in self.config.observation_feature_mapping.others:
-                    if obs_data[""]["eff"] is not None:
-                        result["observation.effort"] = obs_data[""]["eff"]
+                result.update(self._emit_observation_features([obs_data[""]]))
 
             if "" in action_data:
-                result["action"] = action_data[""]["pos"]
+                packed_action = self._pack_or_positions(
+                    self.config.action_feature_mapping.state, [action_data[""]]
+                )
+                if packed_action is not None:
+                    result["action"] = packed_action
 
             return result
+
+    @staticmethod
+    def _zero_like(pos: np.ndarray, arr: np.ndarray | None) -> np.ndarray:
+        if arr is None or arr.size == 0:
+            return np.zeros_like(pos)
+        return arr
+
+    def _concat_field_blocks(
+        self, fields: list[str], entries: list[dict]
+    ) -> np.ndarray:
+        """Block-concat JointState fields across robots: all joints of field 0, then 1, ..."""
+        pos = np.concatenate([e["pos"] for e in entries])
+        vel = np.concatenate([self._zero_like(e["pos"], e.get("vel")) for e in entries])
+        eff = np.concatenate([self._zero_like(e["pos"], e.get("eff")) for e in entries])
+        by_field = {"position": pos, "velocity": vel, "effort": eff}
+        return np.concatenate([by_field[f] for f in fields])
+
+    def _pack_or_positions(
+        self, state: str | list[str], entries: list[dict]
+    ) -> np.ndarray | None:
+        """Pack listed fields, or return concatenated positions for string ``state``."""
+        if not entries:
+            return None
+        fields = packed_fields(state)
+        if fields:
+            return self._concat_field_blocks(fields, entries)
+        return np.concatenate([e["pos"] for e in entries])
+
+    def _emit_observation_features(self, entries: list[dict]) -> dict[str, np.ndarray]:
+        """Build observation.state plus optional sibling velocity/effort keys."""
+        mapping = self.config.observation_feature_mapping
+        result: dict[str, np.ndarray] = {}
+        packed = self._pack_or_positions(mapping.state, entries)
+        if packed is not None:
+            result["observation.state"] = packed
+        if packed_fields(mapping.state):
+            return result
+        if "velocity" in mapping.others:
+            vels = [e["vel"] for e in entries if e.get("vel") is not None]
+            if vels:
+                result["observation.velocity"] = (
+                    vels[0] if len(vels) == 1 else np.concatenate(vels)
+                )
+        if "effort" in mapping.others:
+            effs = [e["eff"] for e in entries if e.get("eff") is not None]
+            if effs:
+                result["observation.effort"] = (
+                    effs[0] if len(effs) == 1 else np.concatenate(effs)
+                )
+        return result
 
     def _find_nearest_in_buffer(
         self,

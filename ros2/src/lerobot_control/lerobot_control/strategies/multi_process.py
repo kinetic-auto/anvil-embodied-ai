@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 import torch
+from anvil_shared.state_observs import compose_packed_observation
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 
@@ -226,6 +227,9 @@ class MultiProcessStrategy:
                         val = data_dict.get(joint_name, 0.0) if data_dict else 0.0
                         ordered.append(val)
                 observation[obs_key] = torch.tensor(ordered, dtype=torch.float32).unsqueeze(0)
+
+            if self._joint_names_config.get("state_layout") == "packed":
+                compose_packed_observation(observation, state_features)
 
         return observation
 

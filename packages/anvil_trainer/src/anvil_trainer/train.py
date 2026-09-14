@@ -76,6 +76,7 @@ def train(config: TrainingConfig | None = None) -> None:
 
     # Warn about unknown --exclude-observs keys
     config.warn_unknown_exclude_keys()
+    config.reject_delta_on_packed_features()
 
     # Resolve final note (auto-preserve / replace / append during resume)
     resolved_note = _resolve_note(config)

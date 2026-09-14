@@ -49,8 +49,13 @@ joint_names:
   arm_mapping:
     r: right
 
+  # Packed 21-dim observation.state: [pos×7 | vel×7 | eff×7] in model_joint_order.
+  # action_start / action_end stay 0 / 7 — block layout puts positions first.
   state_features:
     - position
+    - velocity
+    - effort
+  state_layout: packed
 
 arms:
   right:
