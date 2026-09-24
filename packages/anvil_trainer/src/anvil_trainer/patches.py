@@ -31,6 +31,7 @@ from typing import Any
 
 from anvil_shared.provenance import git_provenance
 from anvil_shared.splits import compute_split_episodes, load_split_info, save_split_info
+from anvil_shared.state_observs import io_layout_from_dataset_features
 
 from anvil_trainer.config import TrainingConfig
 from anvil_trainer.transforms import (
@@ -42,6 +43,27 @@ from anvil_trainer.transforms import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def dataset_io_layout(dataset_root: str | None) -> dict[str, list[str]] | None:
+    """Return the checkpoint ``io`` block for ``dataset_root``, or None when unavailable.
+
+    The block names the joints and the ``[position|velocity|effort]`` fields that
+    make up ``observation.state`` and ``action``, so inference never has to guess
+    the layout from vector widths.
+    """
+    if not dataset_root:
+        return None
+    info_path = Path(dataset_root) / "meta" / "info.json"
+    if not info_path.exists():
+        return None
+    with open(info_path) as f:
+        features = json.load(f).get("features", {})
+    try:
+        return io_layout_from_dataset_features(features)
+    except (KeyError, ValueError) as error:
+        log.warning("[anvil_trainer] anvil_config.json will carry no io block: %s", error)
+        return None
 
 # Sentinel used to mark "patch already installed" in the originals list so we
 # can keep insertion order + detect re-entrancy without wrapping in tuples.
@@ -557,6 +579,9 @@ class TransformRunner:
         }
         if self.config.delta_exclude_joints:
             anvil_cfg_base["delta_exclude_joints"] = self.config.delta_exclude_joints
+        io_layout = dataset_io_layout(self.config.dataset_root)
+        if io_layout is not None:
+            anvil_cfg_base["io"] = io_layout
         if self.config.task_override:
             anvil_cfg_base["task_description"] = self.config.task_override
         if self.config.note:
