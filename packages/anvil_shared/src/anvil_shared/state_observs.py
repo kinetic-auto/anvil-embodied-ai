@@ -11,7 +11,8 @@ the values are tensors, otherwise list flatten.
 """
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 OBS_STATE = "observation.state"
 VALID_JOINT_FIELDS = ("position", "velocity", "effort")
@@ -72,6 +73,96 @@ def channel_groups(names: Sequence[str]) -> dict[str, list[int]]:
     if not groups:
         groups["position"] = list(range(len(names)))
     return groups
+
+
+def io_block_layout(names: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Split block-layout channel names into ``(joint_names, fields)``.
+
+    ``["a.position", "b.position", "a.effort", "b.effort"]`` →
+    ``(["a", "b"], ["position", "effort"])``. Legacy names with no field
+    suffix are a single ``position`` block. The last ``.`` separates joint
+    from field, so joint names themselves must not contain a dot. Raises
+    ``ValueError`` when the names are not a clean block layout.
+    """
+    names = list(names)
+    if not names:
+        raise ValueError("cannot derive an IO layout from an empty name list")
+    if not any("." in name for name in names):
+        return names, ["position"]
+
+    fields: list[str] = []
+    joints_per_field: dict[str, list[str]] = {}
+    for name in names:
+        joint, _, field = name.rpartition(".")
+        if field not in VALID_JOINT_FIELDS or not joint:
+            raise ValueError(f"channel {name!r} is not '<joint>.<field>' with a known field")
+        if field not in fields:
+            fields.append(field)
+        joints_per_field.setdefault(field, []).append(joint)
+
+    joint_names = joints_per_field[fields[0]]
+    if any(joints_per_field[field] != joint_names for field in fields):
+        raise ValueError(f"channels are not one contiguous block per field: {names}")
+    if names != packed_feature_names(joint_names, fields):
+        raise ValueError(f"channels are not in block order (all joints of field 0, then field 1, ...): {names}")
+    return joint_names, fields
+
+
+def io_layout_from_dataset_features(features: Mapping[str, Mapping[str, Any]]) -> dict[str, list[str]]:
+    """Build the checkpoint ``io`` block from a LeRobot ``info.json`` ``features`` map.
+
+    Returns ``{"joint_names": [...], "state_blocks": [...], "action_blocks": [...]}``.
+    Raises ``KeyError``/``ValueError`` when names are missing or not block-layout.
+    """
+
+    def _names(key: str) -> list[str]:
+        names = features[key].get("names") or []
+        if names and isinstance(names[0], dict):
+            names = [n for group in names for n in group.get("motor_names", [])]
+        if not names:
+            raise KeyError(f"dataset feature {key!r} has no channel names")
+        return list(names)
+
+    state_joints, state_blocks = io_block_layout(_names(OBS_STATE))
+    action_joints, action_blocks = io_block_layout(_names("action"))
+    if state_joints != action_joints:
+        raise ValueError(
+            f"observation.state joints {state_joints} differ from action joints {action_joints}"
+        )
+    return {
+        "joint_names": state_joints,
+        "state_blocks": state_blocks,
+        "action_blocks": action_blocks,
+    }
+
+
+def packed_state_features_for_checkpoint(
+    state_dim: int,
+    action_dim: int,
+    n_joints: int,
+    yaml_features: Sequence[str],
+) -> list[str]:
+    """Choose packed ``state_features`` that match checkpoint vector widths.
+
+    Used when live YAML packing does not match ``observation.state`` in the
+    checkpoint (e.g. effort-only YAML with a pos|eff ACT).
+    """
+    yaml_list = [f for f in yaml_features if f in VALID_JOINT_FIELDS]
+    if n_joints <= 0 or state_dim % n_joints != 0:
+        return yaml_list
+    n_blocks = state_dim // n_joints
+    if n_blocks == 3:
+        return ["position", "velocity", "effort"]
+    if n_blocks == 2:
+        return ["position", "effort"]
+    if n_blocks == 1:
+        if len(yaml_list) == 1:
+            return yaml_list
+        # action [pos|eff] + 7-dim state → effort-only observation
+        if action_dim == 2 * n_joints:
+            return ["effort"]
+        return ["position"]
+    return yaml_list
 
 
 def state_features_to_suffixes(state_features: Sequence[str]) -> list[str]:

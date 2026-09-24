@@ -13,6 +13,7 @@ from anvil_shared.state_observs import (
     observation_key,
     packed_feature_names,
     packed_fields,
+    packed_state_features_for_checkpoint,
     position_channel_indices,
     state_features_to_suffixes,
     state_observ_keys,
@@ -116,6 +117,20 @@ class TestPackedHelpers:
             "velocity",
             "effort",
         ]
+
+    def test_packed_features_match_14dim_pos_effort(self):
+        assert packed_state_features_for_checkpoint(14, 14, 7, ["effort"]) == [
+            "position",
+            "effort",
+        ]
+
+    def test_packed_features_keep_7dim_effort_yaml(self):
+        assert packed_state_features_for_checkpoint(7, 14, 7, ["effort"]) == ["effort"]
+
+    def test_packed_features_7dim_effort_when_yaml_is_14(self):
+        assert packed_state_features_for_checkpoint(
+            7, 14, 7, ["position", "effort"]
+        ) == ["effort"]
 
 
 class TestComposePackedObservation:
