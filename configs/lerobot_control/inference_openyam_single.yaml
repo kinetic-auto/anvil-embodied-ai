@@ -10,7 +10,7 @@ model:
 inference_tuning:
 
   act:
-    # Must be <= chunk_size (50). Lower = re-infer more often (faster reaction, more jitter).
+    # Must be <= chunk_size (100). Lower = re-infer more often.
     n_action_steps: 50
     temporal_ensemble_coeff: null
 
@@ -49,11 +49,12 @@ joint_names:
   arm_mapping:
     r: right
 
-  # Packed 21-dim observation.state: [pos×7 | vel×7 | eff×7] in model_joint_order.
-  # action_start / action_end stay 0 / 7 — block layout puts positions first.
+  # Packed observation.state in model_joint_order. The inference node overrides
+  # this from the checkpoint width: 7 → [effort], 14 → [position, effort].
+  # Action is [pos×7 | eff×7]; action_start / action_end stay 0 / 7 so the
+  # position controller only gets the position block.
   state_features:
     - position
-    - velocity
     - effort
   state_layout: packed
 

@@ -33,6 +33,8 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
+from anvil_shared.state_observs import packed_state_features_for_checkpoint
+
 from .action_limiter import ActionLimiter
 from .delta_restore import resolve_action_type, restore_delta_chunk
 from .metrics_tracker import MetricsTracker
@@ -210,6 +212,7 @@ class LeRobotInferenceNode(Node):
         # --- Checkpoint metadata (lightweight JSON reads, no tensor loading) ---
         # Skip in echo_topic_only mode — no checkpoint needed
         meta = {} if self.echo_topic_only else self._read_checkpoint_metadata()
+        self._align_packed_state_features(meta)
 
         # image_shape: from config.json input_features — must match training
         # Default (480, 640, 3) is used only in echo_topic_only mode with no checkpoint
@@ -233,6 +236,25 @@ class LeRobotInferenceNode(Node):
         if model_cfg.get("task_description"):
             self.task_description = model_cfg["task_description"]
 
+    def _align_packed_state_features(self, meta: dict) -> None:
+        """Override YAML state_features when packed width disagrees with the checkpoint."""
+        if self.joint_names_config.get("state_layout") != "packed":
+            return
+        state_dim = meta.get("state_dim")
+        action_dim = meta.get("action_dim")
+        n_joints = len(self.joint_names_config.get("model_joint_order") or [])
+        if not state_dim or not action_dim or not n_joints:
+            return
+        yaml_features = list(self.joint_names_config.get("state_features") or ["position"])
+        aligned = packed_state_features_for_checkpoint(
+            state_dim, action_dim, n_joints, yaml_features
+        )
+        if aligned != yaml_features:
+            self.get_logger().warn(
+                f"state_features {yaml_features} pack {len(yaml_features) * n_joints}-dim "
+                f"but checkpoint observation.state is {state_dim}-dim — using {aligned}"
+            )
+            self.joint_names_config["state_features"] = aligned
 
     @property
     def _is_vla(self) -> bool:
@@ -296,9 +318,17 @@ class LeRobotInferenceNode(Node):
         # Update model_path to resolved checkpoint (for ModelLoader)
         self.model_path = str(checkpoint)
 
+        state_shape = (
+            cfg.get("input_features", {}).get("observation.state", {}).get("shape") or []
+        )
+        action_shape = (
+            cfg.get("output_features", {}).get("action", {}).get("shape") or []
+        )
         meta = {
             "image_shape": image_shape,
             "model_type":  cfg.get("type"),
+            "state_dim": state_shape[0] if state_shape else None,
+            "action_dim": action_shape[0] if action_shape else None,
         }
 
         # anvil_config.json — optional (absent for checkpoints pre-anvil_config)
