@@ -1071,6 +1071,8 @@ class BufferedStreamExtractor:
         """Build observation.state plus optional sibling velocity/effort keys."""
         mapping = self.config.observation_feature_mapping
         result: dict[str, np.ndarray] = {}
+        if isinstance(mapping.state, list) and not mapping.state:
+            return result
         packed = self._pack_or_positions(mapping.state, entries)
         if packed is not None:
             result["observation.state"] = packed

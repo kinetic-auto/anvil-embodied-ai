@@ -67,9 +67,19 @@ class TestValidateFeatureMapping:
         )
         assert any("others must be empty" in e for e in errors)
 
-    def test_empty_list_rejected(self):
-        errors = validate_feature_mapping(FeatureMapping(state=[], others=[]), "obs")
+    def test_empty_list_rejected_for_action(self):
+        errors = validate_feature_mapping(
+            FeatureMapping(state=[], others=[]), "action_feature_mapping"
+        )
         assert any("cannot be empty" in e for e in errors)
+
+    def test_empty_observation_list_is_images_only(self):
+        assert (
+            validate_feature_mapping(
+                FeatureMapping(state=[], others=[]), "observation_feature_mapping"
+            )
+            == []
+        )
 
     def test_string_invalid_field(self):
         errors = validate_feature_mapping(FeatureMapping(state="torque"), "obs")
@@ -83,6 +93,9 @@ class TestValidateExistingConfigs:
             "openarm_single_quest.yaml",
             "openarm_single_quest_afo.yaml",
             "openyam_single_quest.yaml",
+            "openyam_single_quest_pos_eff_img.yaml",
+            "openyam_single_quest_eff_img.yaml",
+            "openyam_single_quest_img.yaml",
             "openarm_bimanual.yaml",
             "openarm_bimanual_quest.yaml",
             "openarm_bimanual_quest_16x9.yaml",
@@ -94,14 +107,23 @@ class TestValidateExistingConfigs:
 
     def test_openyam_yaml_has_list_state(self):
         config = ConfigLoader.from_yaml(str(CONFIG_DIR / "openyam_single_quest.yaml"))
-        assert config.observation_feature_mapping.state == [
-            "position",
-            "velocity",
-            "effort",
-        ]
-        assert config.action_feature_mapping.state == ["position", "velocity", "effort"]
+        assert config.observation_feature_mapping.state == ["effort"]
+        assert config.action_feature_mapping.state == ["position", "effort"]
         assert config.action_from_observation is True
         assert config.action_from_observation_n == 10
+
+    @pytest.mark.parametrize(
+        ("name", "obs_state"),
+        [
+            ("openyam_single_quest_pos_eff_img.yaml", ["position", "effort"]),
+            ("openyam_single_quest_eff_img.yaml", ["effort"]),
+            ("openyam_single_quest_img.yaml", []),
+        ],
+    )
+    def test_openyam_observation_variants(self, name, obs_state):
+        config = ConfigLoader.from_yaml(str(CONFIG_DIR / name))
+        assert config.observation_feature_mapping.state == obs_state
+        assert config.action_feature_mapping.state == ["position", "effort"]
 
     def test_validate_config_runs_from_convert(self):
         source = inspect.getsource(convert_cli.main)
@@ -150,6 +172,20 @@ class TestWriterPackedFeatures:
         assert features["observation.velocity"]["shape"] == (7,)
         assert features["observation.effort"]["shape"] == (7,)
         assert features["observation.state"]["names"][0] == "right_finger_joint1"
+
+    def test_images_only_omits_observation_state(self):
+        config = DataConfig(
+            observation_feature_mapping=FeatureMapping(state=[], others=[]),
+            action_feature_mapping=FeatureMapping(state=["position", "effort"], others=[]),
+        )
+        writer = LeRobotWriter(output_dir="/tmp/unused", repo_id="t", config=config)
+        features = writer._define_features({"right": OPENYAM_JOINTS}, ["chest", "wrist_r"])
+
+        assert "observation.state" not in features
+        assert "observation.images.chest" in features
+        assert features["action"]["shape"] == (14,)
+        assert features["action"]["names"][0] == "right_finger_joint1.position"
+        assert features["action"]["names"][7] == "right_finger_joint1.effort"
 
 
 # =============================================================================
@@ -290,3 +326,26 @@ class TestExtractorPacked:
         np.testing.assert_array_almost_equal(result["observation.velocity"], [0.1, 0.2])
         np.testing.assert_array_almost_equal(result["observation.effort"], [10.0, 20.0])
         np.testing.assert_array_almost_equal(result["action"], [9.0, 8.0])
+
+    def test_images_only_emits_action_without_observation_state(self):
+        config = DataConfig(
+            action_from_observation=True,
+            observation_feature_mapping=FeatureMapping(state=[], others=[]),
+            action_feature_mapping=FeatureMapping(state=["position", "effort"], others=[]),
+        )
+        extractor = BufferedStreamExtractor(config=config, buffer_seconds=5.0, fps=60, quiet=True)
+        joint_buffers = {
+            ("observation", "right"): {
+                "buffer": _buffer(
+                    [
+                        (0.0, [1.0, 2.0], [0.1, 0.2], [10.0, 20.0]),
+                        (1.0, [3.0, 4.0], [0.3, 0.4], [30.0, 40.0]),
+                    ]
+                )
+            }
+        }
+        result = extractor._align_joint_states(joint_buffers, target_ts=0.0, action_ts=1.0)
+
+        assert result is not None
+        assert "observation.state" not in result
+        np.testing.assert_array_almost_equal(result["action"], [3.0, 4.0, 30.0, 40.0])

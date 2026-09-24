@@ -2,12 +2,12 @@
 # OpenArm MCAP to LeRobot Conversion Configuration
 # =============================================================================
 # Teleop Mode: Quest (VR Controller) — SINGLE ARM (right only)
-# Packed observation.state: [effort × 7]
+# Observation: images only (chest, wrist_r, wrist_l). No observation.state.
 # Packed action:            [position × 7 | effort × 7]
 # in canonical joint order (finger_joint1, joint1..joint6).
 #
-# Action is observation shifted by action_from_observation_n (default 10,
-# ≈167 ms at 60 fps). Command topics in this file are ignored.
+# Action is the follower joint state shifted by action_from_observation_n
+# (default 10, ≈167 ms at 60 fps). Command topics in this file are ignored.
 # =============================================================================
 
 robot_state_topic: "/joint_states"
@@ -41,7 +41,7 @@ action_topics:
     joint_order: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "finger_joint1"]
 
 action_from_observation: true
-# action[t] = observation[t + n]. 10 ≈ 167 ms at 60 fps.
+# action[t] = joint state at t + n. 10 ≈ 167 ms at 60 fps.
 action_from_observation_n: 10
 
 
@@ -64,11 +64,12 @@ image_resolution: [640, 480]
 
 
 # =============================================================================
-# Feature Extraction — packed into observation.state / action
+# Feature Extraction — images are the observation; action stays packed
 # =============================================================================
+# state: [] omits observation.state. Cameras above are the whole observation.
 
 observation_feature_mapping:
-  state: ["effort"]
+  state: []
   others: []
 
 action_feature_mapping:

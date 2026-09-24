@@ -98,6 +98,8 @@ class FeatureMapping:
     # String: that JointState field becomes observation.state / action.
     # List: those fields are concatenated in list order into the primary vector
     # (block layout: all joints of field 0, then field 1, ...).
+    # Empty list on observation_feature_mapping means images only: no
+    # observation.state vector is written. Action still requires fields.
     state: Union[str, List[str]] = "position"
 
     # Additional fields to extract as sibling keys (e.g., ["velocity", "effort"]).

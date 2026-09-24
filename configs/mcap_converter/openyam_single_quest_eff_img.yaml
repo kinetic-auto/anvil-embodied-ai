@@ -2,7 +2,7 @@
 # OpenArm MCAP to LeRobot Conversion Configuration
 # =============================================================================
 # Teleop Mode: Quest (VR Controller) — SINGLE ARM (right only)
-# Packed observation.state: [effort × 7]
+# Observation: images + packed observation.state [effort × 7]
 # Packed action:            [position × 7 | effort × 7]
 # in canonical joint order (finger_joint1, joint1..joint6).
 #

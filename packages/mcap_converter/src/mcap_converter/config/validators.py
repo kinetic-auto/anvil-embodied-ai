@@ -102,7 +102,9 @@ def validate_feature_mapping(mapping: FeatureMapping, name: str) -> List[str]:
 
     if isinstance(mapping.state, list):
         if not mapping.state:
-            errors.append(f"{name}.state cannot be empty")
+            # Images-only observation: cameras are the whole observation.
+            if name != "observation_feature_mapping":
+                errors.append(f"{name}.state cannot be empty")
         else:
             seen: set[str] = set()
             for field in mapping.state:

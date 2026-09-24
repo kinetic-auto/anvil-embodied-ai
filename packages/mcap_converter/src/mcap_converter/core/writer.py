@@ -374,13 +374,17 @@ class LeRobotWriter:
             for ft_key in mapping.others
         }
 
+    @staticmethod
+    def _omits_vector(mapping: FeatureMapping) -> bool:
+        return isinstance(mapping.state, list) and len(mapping.state) == 0
+
     def _vector_features(self, joint_names: List[str]) -> Dict[str, Any]:
         obs_map = self.config.observation_feature_mapping
         act_map = self.config.action_feature_mapping
-        features: Dict[str, Any] = {
-            "observation.state": self._vector_feature(joint_names, obs_map),
-            "action": self._vector_feature(joint_names, act_map),
-        }
+        features: Dict[str, Any] = {}
+        if not self._omits_vector(obs_map):
+            features["observation.state"] = self._vector_feature(joint_names, obs_map)
+        features["action"] = self._vector_feature(joint_names, act_map)
         features.update(self._sibling_features(joint_names, obs_map, "observation"))
         features.update(self._sibling_features(joint_names, act_map, "action"))
         return features
