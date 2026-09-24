@@ -3,7 +3,7 @@
     <Domain id="any">
         <General>
             <Interfaces>
-                <NetworkInterface name="wlp0s20f3"/>
+                <NetworkInterface name="enxe8ea6ab81a07"/>
             </Interfaces>
             <AllowMulticast>true</AllowMulticast>
             <MaxMessageSize>65535B</MaxMessageSize>
@@ -11,8 +11,8 @@
         </General>
         <Discovery>
             <Peers>
-                <!-- Anvil Devbox -->
-                <Peer address="192.168.1.234"/>
+                <!-- Anvil Devbox (direct ethernet) -->
+                <Peer address="192.168.2.2"/>
             </Peers>
         </Discovery>
         <Internal>
