@@ -14,7 +14,7 @@ Subscribes to:
 
 Publishes:
     - Forward position controller command topics (std_msgs/Float64MultiArray)
-    - /monitor/obs_state, /monitor/raw_output, /monitor/control_cmd  (when monitor_enable:=true)
+    - /monitor/obs_state, /monitor/obs_effort, /monitor/raw_output, /monitor/control_cmd  (when monitor_enable:=true)
 """
 
 import json
@@ -32,6 +32,8 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallb
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
+
+from anvil_shared.state_observs import packed_state_features_for_checkpoint
 
 from .action_limiter import ActionLimiter
 from .delta_restore import resolve_action_type, restore_delta_chunk
@@ -210,6 +212,7 @@ class LeRobotInferenceNode(Node):
         # --- Checkpoint metadata (lightweight JSON reads, no tensor loading) ---
         # Skip in echo_topic_only mode — no checkpoint needed
         meta = {} if self.echo_topic_only else self._read_checkpoint_metadata()
+        self._align_packed_state_features(meta)
 
         # image_shape: from config.json input_features — must match training
         # Default (480, 640, 3) is used only in echo_topic_only mode with no checkpoint
@@ -233,6 +236,25 @@ class LeRobotInferenceNode(Node):
         if model_cfg.get("task_description"):
             self.task_description = model_cfg["task_description"]
 
+    def _align_packed_state_features(self, meta: dict) -> None:
+        """Override YAML state_features when packed width disagrees with the checkpoint."""
+        if self.joint_names_config.get("state_layout") != "packed":
+            return
+        state_dim = meta.get("state_dim")
+        action_dim = meta.get("action_dim")
+        n_joints = len(self.joint_names_config.get("model_joint_order") or [])
+        if not state_dim or not action_dim or not n_joints:
+            return
+        yaml_features = list(self.joint_names_config.get("state_features") or ["position"])
+        aligned = packed_state_features_for_checkpoint(
+            state_dim, action_dim, n_joints, yaml_features
+        )
+        if aligned != yaml_features:
+            self.get_logger().warn(
+                f"state_features {yaml_features} pack {len(yaml_features) * n_joints}-dim "
+                f"but checkpoint observation.state is {state_dim}-dim — using {aligned}"
+            )
+            self.joint_names_config["state_features"] = aligned
 
     @property
     def _is_vla(self) -> bool:
@@ -296,9 +318,17 @@ class LeRobotInferenceNode(Node):
         # Update model_path to resolved checkpoint (for ModelLoader)
         self.model_path = str(checkpoint)
 
+        state_shape = (
+            cfg.get("input_features", {}).get("observation.state", {}).get("shape") or []
+        )
+        action_shape = (
+            cfg.get("output_features", {}).get("action", {}).get("shape") or []
+        )
         meta = {
             "image_shape": image_shape,
             "model_type":  cfg.get("type"),
+            "state_dim": state_shape[0] if state_shape else None,
+            "action_dim": action_shape[0] if action_shape else None,
         }
 
         # anvil_config.json — optional (absent for checkpoints pre-anvil_config)
@@ -412,6 +442,10 @@ class LeRobotInferenceNode(Node):
 
         logger.info(f"Cameras:    {self.camera_names}")
         logger.info(f"Arms:       {list(self.arms_config.keys())}")
+        if self.joint_names_config.get("state_layout") == "packed":
+            feats = self.joint_names_config.get("state_features", ["position"])
+            n_joints = len(self.joint_names_config.get("model_joint_order") or [])
+            logger.info(f"State pack: {feats}  ({len(feats) * n_joints}-dim)")
 
         if not self.echo_topic_only and hasattr(self, "model") and hasattr(self.model, "config"):
             config = self.model.config
@@ -478,9 +512,12 @@ class LeRobotInferenceNode(Node):
 
         if self._monitor_enable:
             self._monitor_obs_pub = self.create_publisher(Float64MultiArray, "/monitor/obs_state", 10)
+            self._monitor_effort_pub = self.create_publisher(Float64MultiArray, "/monitor/obs_effort", 10)
             self._monitor_raw_pub = self.create_publisher(Float64MultiArray, "/monitor/raw_output", 10)
             self._monitor_cmd_pub = self.create_publisher(Float64MultiArray, "/monitor/control_cmd", 10)
-            self.get_logger().info("Monitor topics enabled: /monitor/{obs_state,raw_output,control_cmd}")
+            self.get_logger().info(
+                "Monitor topics enabled: /monitor/{obs_state,obs_effort,raw_output,control_cmd}"
+            )
 
     def _setup_vla_inference(self) -> None:
         """Initialise ActionQueue and LatencyTracker for VLA / RTC mode."""
@@ -769,12 +806,18 @@ class LeRobotInferenceNode(Node):
     def _publish_action(self, action: np.ndarray) -> None:
         """Publish action to arm controllers."""
         current_positions = self.strategy.get_current_joint_positions()
+        current_efforts = (
+            self.strategy.get_current_joint_efforts()
+            if hasattr(self.strategy, "get_current_joint_efforts")
+            else {}
+        )
         joint_order = self.joint_names_config.get(
             "controller_joint_order",
             self.joint_names_config.get("joint_order", []),
         )
 
         monitor_obs_parts: list[np.ndarray] = []
+        monitor_effort_parts: list[np.ndarray] = []
         monitor_cmd_parts: list[np.ndarray] = []
 
         for arm_name, arm_config in self.arms_config.items():
@@ -789,6 +832,14 @@ class LeRobotInferenceNode(Node):
                 arm_current = np.array(
                     [
                         current_positions.get(f"{ros_prefix}_{joint_order[i]}", 0.0)
+                        for i in range(len(arm_action))
+                    ]
+                )
+            arm_effort = None
+            if current_efforts:
+                arm_effort = np.array(
+                    [
+                        current_efforts.get(f"{ros_prefix}_{joint_order[i]}", 0.0)
                         for i in range(len(arm_action))
                     ]
                 )
@@ -809,11 +860,15 @@ class LeRobotInferenceNode(Node):
             if self._monitor_enable:
                 if arm_current is not None:
                     monitor_obs_parts.append(arm_current)
+                if arm_effort is not None:
+                    monitor_effort_parts.append(arm_effort)
                 monitor_cmd_parts.append(arm_action)
 
         if self._monitor_enable and monitor_cmd_parts:
+            n_cmd = sum(len(p) for p in monitor_cmd_parts)
             self._publish_monitor(
-                obs_state=np.concatenate(monitor_obs_parts) if monitor_obs_parts else np.zeros_like(action),
+                obs_state=np.concatenate(monitor_obs_parts) if monitor_obs_parts else np.zeros(n_cmd),
+                obs_effort=np.concatenate(monitor_effort_parts) if monitor_effort_parts else np.zeros(n_cmd),
                 raw_output=action,
                 control_cmd=np.concatenate(monitor_cmd_parts),
             )
@@ -827,6 +882,7 @@ class LeRobotInferenceNode(Node):
     def _publish_monitor(
         self,
         obs_state: np.ndarray,
+        obs_effort: np.ndarray,
         raw_output: np.ndarray,
         control_cmd: np.ndarray,
     ) -> None:
@@ -834,6 +890,10 @@ class LeRobotInferenceNode(Node):
         obs_msg = Float64MultiArray()
         obs_msg.data = obs_state.tolist()
         self._monitor_obs_pub.publish(obs_msg)
+
+        effort_msg = Float64MultiArray()
+        effort_msg.data = obs_effort.tolist()
+        self._monitor_effort_pub.publish(effort_msg)
 
         raw_msg = Float64MultiArray()
         raw_msg.data = raw_output.tolist()

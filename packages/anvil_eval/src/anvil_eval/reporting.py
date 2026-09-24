@@ -75,6 +75,16 @@ def _compute_aggregate(metrics_list: list[EpisodeMetrics]) -> dict[str, Any]:
         agg["per_joint_mae"][jn] = sum(m.per_joint_mae.get(jn, 0) for m in metrics_list) / n
         agg["per_joint_mse"][jn] = sum(m.per_joint_mse.get(jn, 0) for m in metrics_list) / n
 
+    block_fields = list(metrics_list[0].block_mae.keys())
+    agg["block_mae"] = {
+        field: sum(m.block_mae.get(field, 0) for m in metrics_list) / n
+        for field in block_fields
+    }
+    agg["block_rmse"] = {
+        field: sum(m.block_rmse.get(field, 0) for m in metrics_list) / n
+        for field in block_fields
+    }
+
     return agg
 
 

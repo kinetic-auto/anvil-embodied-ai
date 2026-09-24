@@ -1,0 +1,142 @@
+# Conversion, training, dataset eval, and dataset viz.
+#
+# Same CLIs as the READMEs / docs — drop the `uv run` prefix. The image
+# already has the console scripts on PATH.
+#
+# First run — create the writable host directories, otherwise Docker creates
+# them as root and the container (running as your uid) cannot write:
+#   mkdir -p model_zoo eval_results .train_home .hf_cache
+#
+#   docker compose -f docker-compose.train.yml up --build
+#
+# Paths are as seen INSIDE the container. /var/tmp/anvil-robot/data is mounted
+# at /workspace/data (writable). A dataset at
+# /var/tmp/anvil-robot/data/datasets/my-session is `data/datasets/my-session`.
+# The final path segment names the output directory and the wandb project, so
+# keep the dataset's own directory name.
+#
+# ---------------------------------------------------------------------------
+# In this container (README / docs commands, no `uv run`)
+# ---------------------------------------------------------------------------
+#
+# Data conversion  (docs/data-conversion.md, packages/mcap_converter/README.md)
+#   mcap-valid -i data/raw/my-session
+#   mcap-valid -i data/raw/my-session --verbose
+#   mcap-valid -i data/raw/my-session --fail-on-critical
+#   mcap-valid -i data/raw/my-session --topic /joint_states
+#   mcap-convert -i data/raw/my-session \
+#     --config configs/mcap_converter/openarm_bimanual_quest.yaml \
+#     --output-dir data/datasets
+#   dataset-valid --root data/datasets/my-session
+#   mcap-to-video -i data/raw/my-session/episode.mcap -o data/videos
+#   merge-datasets data/datasets/ds-a data/datasets/ds-b \
+#     --output data/datasets/ds-merged
+#   huggingface-cli login
+#   hf-upload data/datasets/my-session
+#   hf-upload data/datasets/my-session --repo-id your-org/my_dataset --private
+#
+# Browse a dataset  (docs/dataset-viz.md)
+#   dataset-viz data/datasets/my-session
+#   dataset-viz data/datasets/my-session --list-episodes
+#   dataset-viz data/datasets/my-session --episodes "0,2:5"
+#   dataset-viz data/datasets/my-session --web --web-port 9090
+#
+# Model training  (docs/training.md, packages/anvil_trainer/README.md)
+#   anvil-trainer --dataset.root=data/datasets/my-session --policy.type=act
+#   anvil-trainer --dataset.root=data/datasets/my-session --policy.type=act \
+#     --job_name=my-run
+#   anvil-trainer --resume=model_zoo/my-session
+#   wandb login
+#   huggingface-cli login
+#
+# Dataset replay eval  (docs/evaluation.md, packages/anvil_eval/README.md)
+#   anvil-eval \
+#     --checkpoint model_zoo/my-session/my-run/checkpoints/last \
+#     --dataset data/datasets/my-session \
+#     --split val --num-eps 5 --device cuda
+#
+# ---------------------------------------------------------------------------
+# Host only — these launch other compose files, not this container
+# ---------------------------------------------------------------------------
+#
+# ROS2 MCAP replay  (docs/evaluation.md, packages/anvil_eval_ros/README.md)
+#   uv run anvil-eval-ros \
+#     --checkpoint model_zoo/my-session/my-run/checkpoints/last \
+#     --mcap-root data/raw/my-session
+#
+# Inference  (docs/inference.md)
+#   ./scripts/run_inference.sh up --build
+#
+# Optional env overrides:
+#   MODEL_ZOO_DIR  — host checkpoint output tree (default: ./model_zoo)
+#   EVAL_RESULTS_DIR — host anvil-eval output tree (default: ./eval_results)
+#   HF_CACHE       — host HuggingFace cache; VLA policies download backbones
+#                    here (default: ./.hf_cache)
+#   TRAIN_HOME     — host dir backing $HOME in the container; holds wandb,
+#                    matplotlib and triton caches (default: ./.train_home)
+#   BASE_IMAGE     — image to build FROM (default: anvil-robot:latest)
+#   IMAGE_TAG      — tag for the training image (default: latest)
+#   SHM_SIZE       — /dev/shm size; DataLoader workers need well above the
+#                    64MB Docker default (default: 8gb)
+#   HOST_UID / HOST_GID — uid:gid owning the output files (default: 1000:1000)
+#   CUDA_VISIBLE_DEVICES — restrict which GPUs the trainer sees
+#   WANDB_MODE     — offline by default so nothing is uploaded; set to "online"
+#                    with WANDB_API_KEY to stream metrics to wandb
+#
+# SmolVLA / Pi0 / Pi0.5 need policy extras compiled into the base image:
+#   docker build -f docker/inference/Dockerfile --build-arg LEROBOT_EXTRAS=pi \
+#     -t anvil-robot . && docker compose -f docker-compose.train.yml build
+
+services:
+
+  train:
+    image: anvil-robot-train:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: docker/training/Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-anvil-robot:latest}
+    container_name: anvil-train
+    working_dir: /workspace
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    stdin_open: true
+    tty: true
+    # DataLoader workers share tensors through /dev/shm; the 64MB default
+    # aborts training with a bus error once workers start.
+    shm_size: ${SHM_SIZE:-8gb}
+    ports:
+      - "9090:9090"
+      - "9876:9876"
+    environment:
+      # Mounted sources shadow the copies installed in the image, so edits to
+      # packages/ take effect without a rebuild.
+      - PYTHONPATH=/workspace/packages/mcap_converter/src:/workspace/packages/anvil_trainer/src:/workspace/packages/anvil_eval/src:/workspace/packages/anvil_shared/src
+      - LEROBOT_CONTROL_PATH=/workspace/ros2/src/lerobot_control
+      - HOME=/workspace/.train_home
+      - HF_HOME=/workspace/.hf_cache
+      - WANDB_MODE=${WANDB_MODE:-offline}
+      - DISPLAY
+      # Passed through only when set on the host. Assigning an empty value here
+      # would hide every GPU from torch instead of leaving the default.
+      - WANDB_API_KEY
+      - CUDA_VISIBLE_DEVICES
+    volumes:
+      - /var/tmp:/var/tmp
+      - /var/tmp/anvil-robot/data:/workspace/data
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ${MODEL_ZOO_DIR:-./model_zoo}:/workspace/model_zoo
+      - ${EVAL_RESULTS_DIR:-./eval_results}:/workspace/eval_results
+      - ${HF_CACHE:-./.hf_cache}:/workspace/.hf_cache
+      - ${TRAIN_HOME:-./.train_home}:/workspace/.train_home
+      - ./packages:/workspace/packages:ro
+      - ./configs:/workspace/configs:ro
+      - ./ros2:/workspace/ros2:ro
+      - /home/sai/github_repos/anvil-embodied-ai:/workspace/anvil-embodied-ai
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: bash

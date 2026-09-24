@@ -135,3 +135,7 @@ monitor_output*
 debug_images/
 # Git worktrees
 .worktrees/
+
+# Docker-compose train volumes
+.hf_cache/
+.train_home/

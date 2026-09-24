@@ -132,6 +132,52 @@ def _detect_lan_ip() -> str:
         return "127.0.0.1"
 
 
+_META_FEATURE_KEYS = frozenset(
+    {"index", "timestamp", "episode_index", "frame_index", "task_index", "task"}
+)
+_SCALAR_DTYPES = frozenset({"float32", "float64"})
+_IMAGE_DTYPES = frozenset({"image", "video"})
+
+
+def _feature_dim_names(ft: dict, dim: int) -> list[str]:
+    """Joint / dim labels from a LeRobot feature spec, falling back to 0..dim-1."""
+    names = ft.get("names") or []
+    if names and isinstance(names[0], dict):
+        names = [n for group in names for n in group.get("motor_names", [])]
+    return [str(names[i]) if i < len(names) else str(i) for i in range(dim)]
+
+
+def _entity_prefix(key: str) -> str:
+    """Rerun entity path for a dataset key. observation.state stays `state/`."""
+    if key == "observation.state":
+        return "state"
+    if key.startswith("observation."):
+        return key[len("observation.") :]
+    return key
+
+
+def _scalar_feature_keys(features: dict, camera_keys) -> list[str]:
+    """1-D float observation/action keys (state, action, velocity, effort, …)."""
+    camera = set(camera_keys)
+    keys: list[str] = []
+    for key, ft in features.items():
+        if key in _META_FEATURE_KEYS or key in camera:
+            continue
+        if not isinstance(ft, dict):
+            continue
+        if ft.get("dtype") in _IMAGE_DTYPES or ft.get("dtype") not in _SCALAR_DTYPES:
+            continue
+        keys.append(key)
+    return keys
+
+
+def _log_scalar_vector(stream, rr, entity_prefix: str, values, names: list[str]) -> None:
+    flat = values.detach().cpu().flatten()
+    for dim_idx, val in enumerate(flat):
+        label = names[dim_idx] if dim_idx < len(names) else str(dim_idx)
+        stream.log(f"{entity_prefix}/{label}", rr.Scalars(val.item()))
+
+
 def _log_episode_to_stream(
     dataset,
     episode_index: int,
@@ -141,12 +187,14 @@ def _log_episode_to_stream(
     jpeg_quality: int = _DEFAULT_JPEG_QUALITY,
 ) -> None:
     """
-    Log one episode's frames (video, action, state, done/reward/success) to a
-    single Rerun `RecordingStream` instance. This is the same per-frame logic
-    as `lerobot.scripts.lerobot_dataset_viz.visualize_dataset`'s inner loop,
-    replicated with `stream.log`/`stream.set_time` instance calls instead of
-    the global `rr.log`/`rr.set_time` functions, so that N episodes can be
-    logged to N independent, simultaneously-alive recordings.
+    Log one episode's frames (video, action, state, velocity, effort,
+    done/reward/success) to a single Rerun `RecordingStream` instance. This is
+    the same per-frame logic as
+    `lerobot.scripts.lerobot_dataset_viz.visualize_dataset`'s inner loop,
+    plus any extra 1-D float features (velocity/effort), replicated with
+    `stream.log`/`stream.set_time` instance calls instead of the global
+    `rr.log`/`rr.set_time` functions, so that N episodes can be logged to N
+    independent, simultaneously-alive recordings.
 
     `compress_images` mirrors `visualize_dataset`'s own `display_compressed_images`
     flag (JPEG-encodes each frame via `rr.Image(...).compress()` instead of
@@ -165,7 +213,15 @@ def _log_episode_to_stream(
     import torch.utils.data
     import rerun as rr
     from lerobot.scripts.lerobot_dataset_viz import to_hwc_uint8_numpy
-    from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD
+    from lerobot.utils.constants import DONE, REWARD
+
+    features = getattr(dataset.meta, "features", {}) or {}
+    camera_keys = list(getattr(dataset.meta, "camera_keys", []) or [])
+    scalar_keys = _scalar_feature_keys(features, camera_keys)
+    dim_names = {
+        key: _feature_dim_names(features[key], int((features[key].get("shape") or [0])[0] or 0))
+        for key in scalar_keys
+    }
 
     dataloader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=32)
 
@@ -176,7 +232,9 @@ def _log_episode_to_stream(
         for i in range(len(batch["index"])):
             stream.set_time("frame_index", sequence=batch["index"][i].item() - first_index)
             stream.set_time("timestamp", timestamp=batch["timestamp"][i].item())
-            for key in dataset.meta.camera_keys:
+            for key in camera_keys:
+                if key not in batch:
+                    continue
                 img = to_hwc_uint8_numpy(batch[key][i])
                 img_entity = (
                     rr.Image(img).compress(jpeg_quality=jpeg_quality)
@@ -184,12 +242,12 @@ def _log_episode_to_stream(
                     else rr.Image(img)
                 )
                 stream.log(key, img_entity)
-            if ACTION in batch:
-                for dim_idx, val in enumerate(batch[ACTION][i]):
-                    stream.log(f"{ACTION}/{dim_idx}", rr.Scalars(val.item()))
-            if OBS_STATE in batch:
-                for dim_idx, val in enumerate(batch[OBS_STATE][i]):
-                    stream.log(f"state/{dim_idx}", rr.Scalars(val.item()))
+            for key in scalar_keys:
+                if key not in batch:
+                    continue
+                _log_scalar_vector(
+                    stream, rr, _entity_prefix(key), batch[key][i], dim_names[key]
+                )
             if DONE in batch:
                 stream.log(DONE, rr.Scalars(batch[DONE][i].item()))
             if REWARD in batch:
@@ -214,7 +272,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Browse a converted LeRobot dataset with lerobot's own Rerun-based "
-            "viewer -- video, actions, and state synced on one timeline."
+            "viewer -- video, action, state, velocity, and effort synced on one timeline."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""\

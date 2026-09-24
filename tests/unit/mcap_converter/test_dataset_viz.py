@@ -6,6 +6,11 @@ wrapper live in test_dataset_viz_cli.py.
 import json
 from pathlib import Path
 
+from mcap_converter.cli.dataset_viz import (
+    _entity_prefix,
+    _feature_dim_names,
+    _scalar_feature_keys,
+)
 from mcap_converter.viz.config import default_repo_id
 from mcap_converter.viz.dataset_check import validate_dataset_root
 
@@ -104,6 +109,40 @@ class TestValidateDatasetRoot:
         source = Path(mod.__file__).read_text()
         assert "import lerobot" not in source
         assert "from lerobot" not in source
+
+
+class TestScalarFeatureHelpers:
+    def test_entity_prefix_strips_observation(self):
+        assert _entity_prefix("observation.state") == "state"
+        assert _entity_prefix("observation.velocity") == "velocity"
+        assert _entity_prefix("observation.effort") == "effort"
+        assert _entity_prefix("action") == "action"
+
+    def test_feature_dim_names_uses_joint_names(self):
+        ft = {"names": ["right_finger_joint1", "right_joint1"], "shape": [2]}
+        assert _feature_dim_names(ft, 2) == ["right_finger_joint1", "right_joint1"]
+
+    def test_feature_dim_names_falls_back_to_index(self):
+        assert _feature_dim_names({"names": None}, 3) == ["0", "1", "2"]
+        assert _feature_dim_names({}, 2) == ["0", "1"]
+
+    def test_scalar_feature_keys_keeps_vel_effort_drops_images_and_meta(self):
+        features = {
+            "observation.images.chest": {"dtype": "video", "shape": [3, 480, 640]},
+            "observation.state": {"dtype": "float32", "shape": [7]},
+            "observation.velocity": {"dtype": "float32", "shape": [7]},
+            "observation.effort": {"dtype": "float32", "shape": [7]},
+            "action": {"dtype": "float32", "shape": [7]},
+            "timestamp": {"dtype": "float32", "shape": [1]},
+            "index": {"dtype": "int64", "shape": [1]},
+        }
+        keys = _scalar_feature_keys(features, ["observation.images.chest"])
+        assert keys == [
+            "observation.state",
+            "observation.velocity",
+            "observation.effort",
+            "action",
+        ]
 
 
 class TestDefaultRepoId:

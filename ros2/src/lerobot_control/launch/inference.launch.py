@@ -63,7 +63,7 @@ def generate_launch_description():
     monitor_enable_arg = DeclareLaunchArgument(
         "monitor_enable",
         default_value="false",
-        description="Publish /monitor/obs_state, /monitor/raw_output, /monitor/control_cmd for inference_monitor_node",
+        description="Publish /monitor/obs_state, /monitor/obs_effort, /monitor/raw_output, /monitor/control_cmd for inference_monitor_node",
     )
 
     # Node

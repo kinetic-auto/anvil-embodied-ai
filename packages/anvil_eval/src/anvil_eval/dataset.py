@@ -25,25 +25,23 @@ class EvaluationDataset:
         # We assume dataset is local for offline eval
         self.dataset = LeRobotDataset(repo_id="local", root=str(dataset_path))
         self.total_episodes = self.dataset.num_episodes
-        self.joint_names = self._load_joint_names()
+        self.joint_names = self._load_feature_names("action")
+        self.state_names = self._load_feature_names("observation.state")
 
-    def _load_joint_names(self) -> list[str]:
-        """Read joint/action names from dataset metadata."""
+    def _load_feature_names(self, feature_key: str) -> list[str]:
+        """Read vector feature names from dataset metadata."""
         info_path = self.dataset_path / "meta" / "info.json"
-        if not info_path.exists():
-            # Fallback if meta/info.json is missing, try to get from dataset.features
-            if "action" in self.dataset.features:
-                return self.dataset.features["action"].get("names", [])
-            return []
+        names: list = []
+        if info_path.exists():
+            info = json.loads(info_path.read_text())
+            names = info.get("features", {}).get(feature_key, {}).get("names", [])
+        elif feature_key in self.dataset.features:
+            names = self.dataset.features[feature_key].get("names", [])
 
-        info = json.loads(info_path.read_text())
-        names = info.get("features", {}).get("action", {}).get("names", [])
-
-        # Handle nested format: [{"motor_names": ["j1", "j2"]}, ...]
         if names and isinstance(names[0], dict):
             names = [n for group in names for n in group.get("motor_names", [])]
 
-        return names
+        return list(names)
 
     def resolve_splits(self, anvil_cfg: dict, checkpoint_path: Path | None = None) -> dict[str, list[int]]:
         """Get episode lists per split from split_info.json, anvil_config, or fallback defaults."""

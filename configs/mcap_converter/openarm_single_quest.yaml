@@ -51,7 +51,7 @@ joint_names:
 action_topics:
   "/follower_r_forward_position_controller/commands":
     arm: "right"
-    joint_order: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7", "finger_joint1"]
+    joint_order: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "finger_joint1"]
 
 # When the action command topic is not present in the MCAP (e.g., topic was not
 # recorded), fall back to using the follower observation positions as the action.
@@ -66,16 +66,17 @@ action_from_observation: false
 
 # ROS2 image topics (sensor_msgs/Image or sensor_msgs/CompressedImage)
 camera_topics:
-  - "/cam_waist/image_raw/compressed"
-  - "/cam_wrist_r/image_raw/compressed"
   - "/cam_chest/image_raw/compressed"
+  - "/cam_wrist_r/image_raw/compressed"
+  - "/cam_wrist_l/image_raw/compressed"
 
 # Map ROS topics to dataset camera names
 # These become: observation.images.{name}
+# First mapping is the time-base camera.
 camera_topic_mapping:
-  "/cam_waist/image_raw/compressed": "waist"
-  "/cam_wrist_r/image_raw/compressed": "wrist_r"
   "/cam_chest/image_raw/compressed": "chest"
+  "/cam_wrist_r/image_raw/compressed": "wrist_r"
+  "/cam_wrist_l/image_raw/compressed": "wrist_l"
 
 # Target image resolution [width, height]
 image_resolution: [640, 480]
@@ -88,9 +89,9 @@ image_resolution: [640, 480]
 # What to extract from observation joints (follower)
 observation_feature_mapping:
   state: "position"      # Primary feature -> observation.state
-  others: []             # Additional features (uncomment below to enable)
-    # - "velocity"        # -> observation.velocity
-    # - "effort"          # -> observation.effort
+  others:
+    - "velocity"         # -> observation.velocity
+    - "effort"           # -> observation.effort
 
 # What to extract from action commands
 # Note: Float64MultiArray only contains position commands,
@@ -117,11 +118,10 @@ action_feature_mapping:
 #     data: [0.3, 0.4, ..., 0.9]     # right arm target positions
 #
 # Output (LeRobot dataset):
-#   observation.state     [16]  = [left_joints..., right_joints...]  (from follower)
-#   observation.velocity  [16]  = [left_joints..., right_joints...]  (from follower)
-#   observation.effort    [16]  = [left_joints..., right_joints...]  (from follower)
-#   action                [16]  = [left_joints..., right_joints...]  (from command topics)
-#   observation.images.waist    = camera0 frames
-#   observation.images.chest    = camera2 frames
+#   observation.state     [7]  = right joints (from follower)
+#   observation.velocity  [7]  = right joints (from follower)
+#   observation.effort    [7]  = right joints (from follower)
+#   action                [7]  = right joints (from command topic)
+#   observation.images.chest    = camera0 frames (time base)
 #   observation.images.wrist_r  = camera1 frames
-#   observation.images.wrist_l  = camera3 frames
+#   observation.images.wrist_l  = camera2 frames

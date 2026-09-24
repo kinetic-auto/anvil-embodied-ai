@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 import torch
+from anvil_shared.state_observs import compose_packed_observation
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
 
@@ -227,6 +228,9 @@ class MultiProcessStrategy:
                         ordered.append(val)
                 observation[obs_key] = torch.tensor(ordered, dtype=torch.float32).unsqueeze(0)
 
+            if self._joint_names_config.get("state_layout") == "packed":
+                compose_packed_observation(observation, state_features)
+
         return observation
 
     def get_current_joint_positions(self) -> dict[str, float]:
@@ -234,6 +238,12 @@ class MultiProcessStrategy:
         if self._joint_positions is None:
             return {}
         return self._joint_positions
+
+    def get_current_joint_efforts(self) -> dict[str, float]:
+        """Get current joint efforts from /joint_states."""
+        if self._joint_efforts is None:
+            return {}
+        return self._joint_efforts
 
     def get_incomplete_reason(self) -> str:
         """Get reason why observation is incomplete."""

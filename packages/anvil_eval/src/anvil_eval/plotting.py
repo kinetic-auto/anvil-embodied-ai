@@ -68,9 +68,11 @@ def plot_episode_joints(
         ax = axes[abs_row][col]
         ax.plot(frames, ground_truth[:, orig_idx], "b-", linewidth=1.0, label="GT")
         ax.plot(frames, predicted[:, orig_idx], "r--", linewidth=1.0, label="Pred")
-        if obs_states is not None:
-            ax.plot(frames, obs_states[:, orig_idx], color="purple",
-                    linewidth=0.9, alpha=0.7, label="Obs")
+        if obs_states is not None and orig_idx < obs_states.shape[1]:
+            obs_series = obs_states[:, orig_idx]
+            if np.isfinite(obs_series).any():
+                ax.plot(frames, obs_series, color="purple",
+                        linewidth=0.9, alpha=0.7, label="Obs")
         joint_mae = metrics.per_joint_mae.get(name, 0.0)
         ax.set_title(f"{name} (MAE: {joint_mae:.4f})", fontsize=9)
         ax.set_xlabel("frame", fontsize=8)

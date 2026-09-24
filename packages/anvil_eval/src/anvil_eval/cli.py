@@ -84,6 +84,16 @@ def parse_args() -> argparse.Namespace:
         default=42,
         help="Random seed for sampling episodes (default: 42)",
     )
+    parser.add_argument(
+        "--n-action-steps",
+        type=int,
+        default=None,
+        help=(
+            "How many steps to pop from each action chunk before the next "
+            "forward. Default: checkpoint n_action_steps. Use 1 to re-infer "
+            "every frame."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -151,7 +161,9 @@ def main() -> None:
     # 5. Load Model
     log.info("[anvil-eval] Loading model from %s...", checkpoint_path)
     try:
-        model, preprocessor, postprocessor, model_type = load_model(str(checkpoint_path), config.device)
+        model, preprocessor, postprocessor, model_type = load_model(
+            str(checkpoint_path), config.device, n_action_steps=args.n_action_steps
+        )
     except Exception as e:
         import traceback
         log.error("[anvil-eval] Failed to load model: %s", e)
@@ -168,6 +180,7 @@ def main() -> None:
         anvil_cfg=anvil_cfg,
         task_description=config.task_description,
         joint_names=eval_dataset.joint_names,
+        state_names=eval_dataset.state_names,
     )
 
     # 7. Create output directory

@@ -2,6 +2,9 @@
 
 Generates per-episode observation.state vs action comparison plots to visually
 verify action_from_observation_n alignment after conversion.
+
+Packed obs/action can differ (e.g. effort-only state vs pos+effort action).
+Subplots are matched by ``info.json`` channel name, not by vector index.
 """
 
 from __future__ import annotations
@@ -10,6 +13,34 @@ import json
 import math
 from pathlib import Path
 from typing import Optional
+
+
+def overlay_channels(
+    obs_names: list[str],
+    act_names: list[str],
+    n_obs: int,
+    n_act: int,
+) -> list[tuple[str, int | None, int | None]]:
+    """Build (title, obs_index, action_index) rows, matching packed names."""
+    obs_ok = len(obs_names) == n_obs
+    act_ok = len(act_names) == n_act
+    if obs_ok and act_ok and (obs_names or act_names):
+        obs_idx = {n: i for i, n in enumerate(obs_names)}
+        act_idx = {n: i for i, n in enumerate(act_names)}
+        ordered = list(dict.fromkeys([*act_names, *obs_names]))
+        return [(n, obs_idx.get(n), act_idx.get(n)) for n in ordered]
+
+    n_pair = min(n_obs, n_act)
+    names = obs_names if obs_ok and obs_names else [f"joint_{i}" for i in range(n_pair)]
+    channels: list[tuple[str, int | None, int | None]] = [
+        (names[i] if i < len(names) else f"joint_{i}", i, i) for i in range(n_pair)
+    ]
+    if n_obs != n_act:
+        for i in range(n_pair, n_obs):
+            channels.append((f"observation.state[{i}]", i, None))
+        for i in range(n_pair, n_act):
+            channels.append((f"action[{i}]", None, i))
+    return channels
 
 
 def plot_conversion_debug(
@@ -36,17 +67,19 @@ def plot_conversion_debug(
     plots_dir = root / "debug_plots"
     plots_dir.mkdir(exist_ok=True)
 
-    # Load joint names from meta/info.json
     info_path = root / "meta" / "info.json"
-    joint_names: list[str] = []
+    obs_names: list[str] = []
+    act_names: list[str] = []
+    features: dict = {}
     fps: int = 30
     if info_path.exists():
         info = json.loads(info_path.read_text())
-        obs_feature = info.get("features", {}).get("observation.state", {})
-        joint_names = obs_feature.get("names", [])
+        features = info.get("features", {})
+        obs_names = list(features.get("observation.state", {}).get("names", []) or [])
+        act_names = list(features.get("action", {}).get("names", []) or [])
         fps = info.get("fps", 30)
+    has_obs_state = "observation.state" in features
 
-    # Try to read action_from_observation_n from saved conversion config
     if action_from_observation_n is None:
         config_path = root / "conversion_config.yaml"
         if config_path.exists():
@@ -59,17 +92,18 @@ def plot_conversion_debug(
         else:
             action_from_observation_n = 10
 
-    # Collect parquet files sorted by chunk/file order
     data_files = sorted((root / "data").rglob("*.parquet"))
     if not data_files:
         print(f"[debug_plot] No parquet files found in {root / 'data'}")
         return
 
-    # Read all rows for the first n_episodes episodes
+    columns = ["episode_index", "frame_index", "action"]
+    if has_obs_state:
+        columns.insert(2, "observation.state")
+
     tables = []
     for f in data_files:
-        tbl = pq.read_table(f, columns=["episode_index", "frame_index", "observation.state", "action"])
-        # Filter to episodes we care about
+        tbl = pq.read_table(f, columns=columns)
         import pyarrow.compute as pc
         mask = pc.less(tbl["episode_index"], n_episodes)
         filtered = tbl.filter(mask)
@@ -84,10 +118,11 @@ def plot_conversion_debug(
     combined = pa.concat_tables(tables)
     ep_indices = combined["episode_index"].to_pylist()
     frame_indices = combined["frame_index"].to_pylist()
-    obs_state_rows = combined["observation.state"].to_pylist()
+    obs_state_rows = (
+        combined["observation.state"].to_pylist() if has_obs_state else [None] * len(ep_indices)
+    )
     action_rows = combined["action"].to_pylist()
 
-    # Group by episode
     episodes: dict[int, dict] = {}
     for ep, fr, obs, act in zip(ep_indices, frame_indices, obs_state_rows, action_rows):
         if ep not in episodes:
@@ -101,35 +136,59 @@ def plot_conversion_debug(
 
     for ep_idx in sorted(episodes.keys())[:n_episodes]:
         ep_data = episodes[ep_idx]
-        # Sort by frame index
         order = sorted(range(len(ep_data["frames"])), key=lambda i: ep_data["frames"][i])
-        obs_arr = np.array([ep_data["obs"][i] for i in order], dtype=np.float32)
         act_arr = np.array([ep_data["act"][i] for i in order], dtype=np.float32)
+        if has_obs_state:
+            obs_arr = np.array([ep_data["obs"][i] for i in order], dtype=np.float32)
+        else:
+            obs_arr = np.zeros((act_arr.shape[0], 0), dtype=np.float32)
+        if obs_arr.ndim == 1:
+            obs_arr = obs_arr[:, None]
+        if act_arr.ndim == 1:
+            act_arr = act_arr[:, None]
 
-        n_joints = obs_arr.shape[1] if obs_arr.ndim == 2 else 1
-        names = joint_names if len(joint_names) == n_joints else [f"joint_{i}" for i in range(n_joints)]
-
-        ncols = min(4, n_joints)
-        nrows = math.ceil(n_joints / ncols)
+        channels = overlay_channels(
+            obs_names, act_names, obs_arr.shape[1], act_arr.shape[1]
+        )
+        n_plots = len(channels)
+        ncols = min(4, n_plots)
+        nrows = math.ceil(n_plots / ncols)
         fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows), squeeze=False)
         fig.suptitle(
-            f"Episode {ep_idx} — obs.state (blue) vs action (orange) | offset {offset_label}",
+            f"Episode {ep_idx} — obs.state (blue) vs action (orange) by name | offset {offset_label}",
             fontsize=11,
         )
 
         frames = np.arange(obs_arr.shape[0])
-        for j, name in enumerate(names):
+        legend_done = False
+        for j, (name, obs_i, act_i) in enumerate(channels):
             row, col = divmod(j, ncols)
             ax = axes[row][col]
-            ax.plot(frames, obs_arr[:, j], color="steelblue", linewidth=1.0, label="obs.state")
-            ax.plot(frames, act_arr[:, j], color="darkorange", linewidth=1.0, linestyle="--", label="action")
+            if obs_i is not None:
+                ax.plot(
+                    frames,
+                    obs_arr[:, obs_i],
+                    color="steelblue",
+                    linewidth=1.0,
+                    label="obs.state",
+                )
+            if act_i is not None:
+                ax.plot(
+                    frames,
+                    act_arr[:, act_i],
+                    color="darkorange",
+                    linewidth=1.0,
+                    linestyle="--",
+                    label="action",
+                )
             ax.set_title(name, fontsize=9)
             ax.set_xlabel("frame", fontsize=8)
             ax.tick_params(labelsize=7)
-            if j == 0:
+            if not legend_done and obs_i is not None and act_i is not None:
                 ax.legend(fontsize=7)
+                legend_done = True
 
-        for j in range(n_joints, nrows * ncols):
+        for j in range(n_plots, nrows * ncols):
             row, col = divmod(j, ncols)
             axes[row][col].set_visible(False)
 

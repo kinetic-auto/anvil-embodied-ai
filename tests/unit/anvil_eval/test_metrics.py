@@ -106,3 +106,29 @@ def test_summary_metrics():
     assert "val" in summary
     assert summary["val"]["num_episodes"] == 2
     assert summary["val"]["mae_mean"] == pytest.approx(0.15, abs=1e-6)
+
+
+def test_packed_aggregate_is_position_only():
+    """Headline MAE stays comparable to the 7-dim baseline on identical pos data."""
+    joints = [f"j{i}" for i in range(7)]
+    names = (
+        [f"{j}.position" for j in joints]
+        + [f"{j}.velocity" for j in joints]
+        + [f"{j}.effort" for j in joints]
+    )
+    gt = np.zeros((10, 21))
+    pred = np.zeros((10, 21))
+    pred[:, :7] = 0.5
+    pred[:, 7:14] = 100.0
+    pred[:, 14:] = 200.0
+
+    m = compute_episode_metrics(pred, gt, names, 0, "val")
+    assert m.mae == pytest.approx(0.5, abs=1e-8)
+    assert m.block_mae["position"] == pytest.approx(0.5, abs=1e-8)
+    assert m.block_mae["velocity"] == pytest.approx(100.0, abs=1e-8)
+    assert m.block_mae["effort"] == pytest.approx(200.0, abs=1e-8)
+
+    baseline = compute_episode_metrics(pred[:, :7], gt[:, :7], joints, 0, "val")
+    assert m.mae == pytest.approx(baseline.mae, abs=1e-8)
+    assert m.rmse == pytest.approx(baseline.rmse, abs=1e-8)
+    assert m.cosine_similarity == pytest.approx(baseline.cosine_similarity, abs=1e-6)

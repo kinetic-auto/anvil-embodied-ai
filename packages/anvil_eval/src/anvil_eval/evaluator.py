@@ -16,6 +16,33 @@ from tqdm import tqdm
 log = logging.getLogger(__name__)
 
 
+def align_obs_to_action(
+    obs: np.ndarray,
+    action_names: list[str],
+    state_names: list[str],
+) -> np.ndarray:
+    """Map observation.state onto the action-name axis.
+
+    Packed datasets can store a shorter state (e.g. effort-only) than the
+    action vector (position+effort). Plotting indexes by action channel, so
+    unmatched action dims become NaN.
+    """
+    if obs.shape[-1] == len(action_names):
+        return np.asarray(obs, dtype=np.float32).reshape(-1).copy()
+    aligned = np.full(len(action_names), np.nan, dtype=np.float32)
+    if not state_names:
+        n = min(obs.shape[-1], len(action_names))
+        aligned[:n] = np.asarray(obs).reshape(-1)[:n]
+        return aligned
+    lookup = {name: i for i, name in enumerate(state_names)}
+    flat = np.asarray(obs).reshape(-1)
+    for j, name in enumerate(action_names):
+        i = lookup.get(name)
+        if i is not None and i < len(flat):
+            aligned[j] = flat[i]
+    return aligned
+
+
 def _ensure_model_loader_importable() -> None:
     """Add lerobot_control to sys.path for ModelLoader import (zero ROS2 deps)."""
     env_path = os.environ.get("LEROBOT_CONTROL_PATH")
@@ -57,6 +84,7 @@ class EpisodeEvaluator:
         anvil_cfg: dict,
         task_description: str | None,
         joint_names: list[str],
+        state_names: list[str] | None = None,
     ):
         self.model = model
         self.preprocessor = preprocessor
@@ -70,6 +98,7 @@ class EpisodeEvaluator:
         self.delta_exclude_joints = anvil_cfg.get("delta_exclude_joints", [])
         self.task_description = task_description
         self.joint_names = joint_names
+        self.state_names = state_names or []
         self._is_vla = model_type in ("pi0", "pi05", "smolvla")
         self._exclude_indices: set[int] | None = None
         self._delta_ref_state: np.ndarray | None = None
@@ -163,9 +192,11 @@ class EpisodeEvaluator:
 
             raw_actions.append(action)
 
-            # Capture observation state for per-frame diagnostics
+            # Capture observation state for per-frame diagnostics (action-aligned)
             if obs_state is not None:
-                obs_state_list.append(_obs_flat.copy())
+                obs_state_list.append(
+                    align_obs_to_action(_obs_flat, self.joint_names, self.state_names)
+                )
 
             # Compute raw ground truth (same space as raw model output)
             if self.use_delta_actions and _obs_flat is not None:
@@ -270,13 +301,21 @@ class EpisodeEvaluator:
                 delta_gt[i] = gt_action[i]
         return delta_gt
 
-def load_model(checkpoint: str, device: str):
+def load_model(checkpoint: str, device: str, n_action_steps: int | None = None):
     """Load model + processors from checkpoint using ModelLoader.
 
     Returns (model, preprocessor, postprocessor, model_type).
+    ``n_action_steps`` overrides the checkpoint queue length when set.
     """
     _ensure_model_loader_importable()
     from lerobot_control.model_loader import ModelLoader
+
+    if n_action_steps is not None and n_action_steps < 1:
+        raise ValueError(f"n_action_steps must be >= 1, got {n_action_steps}")
+
+    overrides = {}
+    if n_action_steps is not None:
+        overrides["n_action_steps"] = n_action_steps
 
     loader = ModelLoader(
         model_path=checkpoint,
@@ -284,11 +323,18 @@ def load_model(checkpoint: str, device: str):
         logger=None,
         deterministic=True,
         seed=42,
+        config_overrides=overrides or None,
     )
     model, preprocessor, postprocessor = loader.load_with_processors()
 
     # Detect model type
     model_type = getattr(loader, "model_type", "unknown")
+    n_action_steps = getattr(getattr(model, "config", None), "n_action_steps", None)
 
-    log.info("[anvil-eval] Loaded model: type=%s, device=%s", model_type, device)
+    log.info(
+        "[anvil-eval] Loaded model: type=%s, device=%s, n_action_steps=%s",
+        model_type,
+        device,
+        n_action_steps,
+    )
     return model, preprocessor, postprocessor, model_type

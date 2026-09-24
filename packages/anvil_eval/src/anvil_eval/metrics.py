@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from anvil_shared.state_observs import channel_groups
+
 
 @dataclass
 class EpisodeMetrics:
@@ -27,6 +29,9 @@ class EpisodeMetrics:
     pred_smoothness_std: float
     gt_smoothness_mean: float
     gt_smoothness_std: float
+    block_mae: dict[str, float] = field(default_factory=dict)
+    block_rmse: dict[str, float] = field(default_factory=dict)
+    block_cosine: dict[str, float] = field(default_factory=dict)
 
 
 def compute_episode_metrics(
@@ -46,10 +51,31 @@ def compute_episode_metrics(
         split_label: split label (train/val/test/manual)
     """
     error = predicted - ground_truth  # (T, D)
+    groups = channel_groups(joint_names)
+    pos_idx = groups["position"]
 
-    mse = float(np.mean(error**2))
-    mae = float(np.mean(np.abs(error)))
+    def _mse(idx: list[int]) -> float:
+        return float(np.mean(error[:, idx] ** 2))
+
+    def _mae(idx: list[int]) -> float:
+        return float(np.mean(np.abs(error[:, idx])))
+
+    def _cosine(idx: list[int]) -> float:
+        pred = predicted[:, idx]
+        gt = ground_truth[:, idx]
+        dot = np.sum(pred * gt, axis=1)
+        norm_p = np.linalg.norm(pred, axis=1)
+        norm_g = np.linalg.norm(gt, axis=1)
+        denom = norm_p * norm_g
+        cos_sim = np.where(denom > 1e-8, dot / denom, 0.0)
+        return float(np.mean(cos_sim))
+
+    mse = _mse(pos_idx)
+    mae = _mae(pos_idx)
     rmse = float(np.sqrt(mse))
+    block_mae = {field: _mae(idx) for field, idx in groups.items()}
+    block_rmse = {field: float(np.sqrt(_mse(idx))) for field, idx in groups.items()}
+    block_cosine = {field: _cosine(idx) for field, idx in groups.items()}
 
     abs_error = np.abs(error)
     max_idx = np.unravel_index(np.argmax(abs_error), abs_error.shape)
@@ -66,13 +92,7 @@ def compute_episode_metrics(
         name: float(np.sqrt(per_joint_mse[name])) for name in joint_names
     }
 
-    # Cosine similarity (per-frame, then average)
-    dot = np.sum(predicted * ground_truth, axis=1)
-    norm_p = np.linalg.norm(predicted, axis=1)
-    norm_g = np.linalg.norm(ground_truth, axis=1)
-    denom = norm_p * norm_g
-    cos_sim = np.where(denom > 1e-8, dot / denom, 0.0)
-    cosine_similarity = float(np.mean(cos_sim))
+    cosine_similarity = block_cosine["position"]
 
     # Smoothness: L2 norm of consecutive action deltas
     if predicted.shape[0] > 1:
@@ -102,6 +122,9 @@ def compute_episode_metrics(
         pred_smoothness_std=pred_smooth_std,
         gt_smoothness_mean=gt_smooth_mean,
         gt_smoothness_std=gt_smooth_std,
+        block_mae=block_mae,
+        block_rmse=block_rmse,
+        block_cosine=block_cosine,
     )
 
 
@@ -128,6 +151,16 @@ def compute_summary_metrics(episode_metrics: list[EpisodeMetrics]) -> dict:
             per_joint_mae_mean[jn] = float(np.mean(vals))
             per_joint_mae_std[jn] = float(np.std(vals))
 
+        block_fields = list(metrics_list[0].block_mae.keys())
+        block_mae_mean = {
+            field: float(np.mean([m.block_mae[field] for m in metrics_list]))
+            for field in block_fields
+        }
+        block_rmse_mean = {
+            field: float(np.mean([m.block_rmse[field] for m in metrics_list]))
+            for field in block_fields
+        }
+
         summary[split_name] = {
             "num_episodes": n,
             "mse_mean": float(np.mean(mses)),
@@ -140,6 +173,8 @@ def compute_summary_metrics(episode_metrics: list[EpisodeMetrics]) -> dict:
             "cosine_similarity_std": float(np.std(cos_sims)),
             "per_joint_mae_mean": per_joint_mae_mean,
             "per_joint_mae_std": per_joint_mae_std,
+            "block_mae_mean": block_mae_mean,
+            "block_rmse_mean": block_rmse_mean,
         }
 
     return summary

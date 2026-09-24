@@ -71,6 +71,10 @@ class InferenceStrategy(Protocol):
         """
         ...
 
+    def get_current_joint_efforts(self) -> dict[str, float]:
+        """Get current joint efforts from /joint_states. Empty if none yet."""
+        ...
+
     def get_incomplete_reason(self) -> str:
         """
         Get human-readable reason why observation is incomplete.

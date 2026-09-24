@@ -3,8 +3,7 @@
     <Domain id="any">
         <General>
             <Interfaces>
-                <!-- GPU PC ethernet interface -->
-                <NetworkInterface name="eno1"/>
+                <NetworkInterface name="enxe8ea6ab81a07"/>
             </Interfaces>
             <AllowMulticast>true</AllowMulticast>
             <MaxMessageSize>65535B</MaxMessageSize>
@@ -12,8 +11,8 @@
         </General>
         <Discovery>
             <Peers>
-                <!-- Robot PC IP (example — replace with your Robot PC's address) -->
-                <Peer address="192.168.0.128"/>
+                <!-- Anvil Devbox (direct ethernet) -->
+                <Peer address="192.168.2.2"/>
             </Peers>
         </Discovery>
         <Internal>

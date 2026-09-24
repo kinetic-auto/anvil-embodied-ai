@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from anvil_shared.state_observs import is_packed_names
+
 log = logging.getLogger(__name__)
 
 
@@ -390,6 +392,39 @@ class TrainingConfig:
             full_key = f"observation.{suffix}"
             if full_key not in available:
                 log.warning("[anvil_trainer] --exclude-observs key not in dataset: %s", full_key)
+
+    def reject_delta_on_packed_features(self) -> None:
+        """Refuse delta actions on a packed pos/vel/effort dataset.
+
+        Name-based delta mapping matches every channel, so velocity and effort
+        subtract from themselves and become exactly-zero targets.
+        """
+        if self.action_type not in ("delta_obs_t", "delta_sequential"):
+            return
+        if not self.dataset_root:
+            return
+
+        info_path = Path(self.dataset_root) / "meta" / "info.json"
+        if not info_path.exists():
+            return
+
+        with open(info_path) as f:
+            info = json.load(f)
+
+        def _names(feat_key: str) -> list[str]:
+            names = info.get("features", {}).get(feat_key, {}).get("names", [])
+            if names and isinstance(names[0], dict):
+                names = [n for group in names for n in group.get("motor_names", [])]
+            return names
+
+        action_names = _names("action")
+        state_names = _names("observation.state")
+        if is_packed_names(action_names) or is_packed_names(state_names):
+            raise ValueError(
+                f"--action-type={self.action_type} is not supported on a packed "
+                "position/velocity/effort dataset: vel/effort targets would "
+                "subtract to zero. Use --action-type=absolute."
+            )
 
 
 # =============================================================================
