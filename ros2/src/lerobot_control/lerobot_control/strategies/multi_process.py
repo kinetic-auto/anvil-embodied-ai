@@ -239,6 +239,12 @@ class MultiProcessStrategy:
             return {}
         return self._joint_positions
 
+    def get_current_joint_efforts(self) -> dict[str, float]:
+        """Get current joint efforts from /joint_states."""
+        if self._joint_efforts is None:
+            return {}
+        return self._joint_efforts
+
     def get_incomplete_reason(self) -> str:
         """Get reason why observation is incomplete."""
         return self._last_incomplete_reason

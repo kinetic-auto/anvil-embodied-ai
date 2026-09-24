@@ -67,11 +67,13 @@ class InferenceMonitorNode(Node):
 
         # Latest data buffers — written by callbacks, flushed by timer
         self._latest_obs: np.ndarray | None = None
+        self._latest_effort: np.ndarray | None = None
         self._latest_raw: np.ndarray | None = None
         self._latest_cmd: np.ndarray | None = None
         self._latest_ts: float = 0.0
 
         self.create_subscription(Float64MultiArray, "/monitor/obs_state", self._on_obs, 10)
+        self.create_subscription(Float64MultiArray, "/monitor/obs_effort", self._on_effort, 10)
         self.create_subscription(Float64MultiArray, "/monitor/raw_output", self._on_raw, 10)
         self.create_subscription(Float64MultiArray, "/monitor/control_cmd", self._on_cmd, 10)
 
@@ -81,7 +83,7 @@ class InferenceMonitorNode(Node):
         self.create_timer(1.0 / 30.0, self._timer_flush)
 
         self.get_logger().info(
-            f"[monitor] Listening on /monitor/{{obs_state,raw_output,control_cmd}}\n"
+            f"[monitor] Listening on /monitor/{{obs_state,obs_effort,raw_output,control_cmd}}\n"
             f"[monitor] action_type: {self._action_type}\n"
             f"[monitor] joint_names: {self._joint_names or '(none, will use indices)'}\n"
             f"[monitor] Output: {self._output_dir}\n"
@@ -97,6 +99,10 @@ class InferenceMonitorNode(Node):
             self._latest_obs = np.array(msg.data, dtype=np.float32)
             self._latest_ts = time.monotonic()
 
+    def _on_effort(self, msg: Float64MultiArray) -> None:
+        with self._lock:
+            self._latest_effort = np.array(msg.data, dtype=np.float32)
+
     def _on_raw(self, msg: Float64MultiArray) -> None:
         with self._lock:
             self._latest_raw = np.array(msg.data, dtype=np.float32)
@@ -109,6 +115,7 @@ class InferenceMonitorNode(Node):
         """Periodic flush at ~30 Hz — log only when all three buffers are ready."""
         with self._lock:
             obs = self._latest_obs
+            effort = self._latest_effort
             raw = self._latest_raw
             cmd = self._latest_cmd
             ts = self._latest_ts
@@ -118,13 +125,22 @@ class InferenceMonitorNode(Node):
             self._latest_raw = None
             self._latest_cmd = None
 
-        self._log_step(obs, raw, cmd, ts)
+        self._log_step(obs, raw, cmd, ts, effort)
 
     # ──────────────────────────────────────────────────────────────────────
     # Logging
     # ──────────────────────────────────────────────────────────────────────
 
-    def _log_step(self, obs: np.ndarray, raw: np.ndarray, cmd: np.ndarray, ts: float) -> None:
+    def _log_step(
+        self,
+        obs: np.ndarray,
+        raw: np.ndarray,
+        cmd: np.ndarray,
+        ts: float,
+        effort: np.ndarray | None = None,
+    ) -> None:
+        if effort is None:
+            effort = np.full(len(obs), np.nan, dtype=np.float32)
         if not self._csv_header_written:
             n = len(obs)
             # Write metadata comment lines before the CSV header so plot_monitor_csv.py
@@ -136,6 +152,7 @@ class InferenceMonitorNode(Node):
             header = (
                 ["timestamp"]
                 + [f"obs_state_{i}" for i in range(n)]
+                + [f"obs_effort_{i}" for i in range(len(effort))]
                 + [f"raw_output_{i}" for i in range(len(raw))]
                 + [f"control_cmd_{i}" for i in range(len(cmd))]
                 + [f"delta_cmd_{i}" for i in range(len(cmd))]
@@ -150,7 +167,14 @@ class InferenceMonitorNode(Node):
         else:  # delta_obs_t or absolute (column kept for schema consistency)
             delta_cmd = cmd - obs[:d]
         self._prev_cmd = cmd.copy()
-        row = [f"{ts:.6f}"] + obs.tolist() + raw.tolist() + cmd.tolist() + delta_cmd.tolist()
+        row = (
+            [f"{ts:.6f}"]
+            + obs.tolist()
+            + effort.tolist()
+            + raw.tolist()
+            + cmd.tolist()
+            + delta_cmd.tolist()
+        )
         self._csv_writer.writerow(row)
         self._csv_file.flush()
 
