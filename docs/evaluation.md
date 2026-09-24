@@ -43,6 +43,7 @@ Produces per-joint trajectory plots and a summary box plot.
 | `--device DEVICE` | `cuda` | Inference device: `cuda` or `cpu` |
 | `--task-description TEXT` | — | VLA task prompt — overrides `anvil_config.json` (SmolVLA / Pi0.5 only) |
 | `--seed N` | `42` | Random seed for episode sampling |
+| `--n-action-steps N` | checkpoint | Chunk steps to execute before the next forward. `1` re-infers every frame |
 
 Use `--split all` to sample from across the full dataset:
 
